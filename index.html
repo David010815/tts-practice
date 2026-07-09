@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>낭독 연습</title>
+<meta name="theme-color" content="#3b6ef5">
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, sans-serif; margin: 0; padding: 0 0 40px;
+    background: linear-gradient(180deg, #eef4ff 0%, #f7faff 100%);
+    min-height: 100vh;
+  }
+  header {
+    background: linear-gradient(135deg, #1e50c8 0%, #3b6ef5 60%, #5a8bff 100%);
+    color: #fff; padding: 22px 20px 18px;
+    border-radius: 0 0 22px 22px;
+    box-shadow: 0 4px 14px rgba(30, 80, 200, .25);
+  }
+  header h2 { margin: 0; font-size: 22px; }
+  header p { margin: 4px 0 0; font-size: 13px; opacity: .85; }
+  .wrap { padding: 16px; max-width: 700px; margin: 0 auto; }
+  textarea {
+    width: 100%; min-height: 180px; font-size: 16px; line-height: 1.6;
+    padding: 14px; border-radius: 14px; border: 1.5px solid #c9d8ff;
+    background: #fff; resize: vertical; font-family: inherit;
+  }
+  .label { font-size: 13px; font-weight: 600; color: #4a6bbf; margin: 14px 0 6px; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
+  select {
+    font-size: 15px; padding: 10px 12px; border-radius: 12px;
+    border: 1.5px solid #c9d8ff; background: #fff; color: #234; max-width: 100%;
+  }
+  input[type=range] { flex: 1; min-width: 120px; accent-color: #3b6ef5; }
+  .val { font-size: 14px; font-weight: 700; color: #2a5ce0; min-width: 48px; text-align: right; }
+  button {
+    font-size: 16px; font-weight: 700; padding: 12px 20px;
+    border-radius: 12px; border: none; cursor: pointer;
+  }
+  .play { background: linear-gradient(135deg, #2a5ce0, #3b6ef5); color: #fff;
+          box-shadow: 0 3px 10px rgba(59, 110, 245, .4); flex: 1; min-width: 120px; }
+  .sub { background: #fff; color: #3b5bb5; border: 1.5px solid #c9d8ff; }
+  button:active { transform: scale(.98); }
+  #status { color: #7a8db5; font-size: 13px; margin: 12px 2px; }
+  #sentences { margin-top: 10px; }
+  .sent {
+    background: #fff; border-radius: 10px; padding: 10px 14px; margin-bottom: 6px;
+    font-size: 15px; line-height: 1.5; color: #45557a;
+    border-left: 4px solid transparent;
+  }
+  .sent.now {
+    border-left-color: #3b6ef5; color: #1c2b4a; font-weight: 600;
+    box-shadow: 0 2px 8px rgba(59, 110, 245, .18);
+  }
+</style>
+</head>
+<body>
+<header>
+  <h2>낭독 연습</h2>
+  <p>텍스트를 붙여넣고 재생하세요</p>
+</header>
+<div class="wrap">
+  <textarea id="text" placeholder="여기에 연설문, 기사 등 텍스트를 붙여넣으세요"></textarea>
+
+  <div class="label">음성</div>
+  <div class="row">
+    <select id="voice"></select>
+  </div>
+
+  <div class="label">속도</div>
+  <div class="row">
+    <input type="range" id="rate" min="0.5" max="2" step="0.1" value="1">
+    <span class="val" id="rateVal">1.0x</span>
+  </div>
+
+  <div class="label">문장 사이 멈춤 (순차통역 연습용)</div>
+  <div class="row">
+    <select id="gap">
+      <option value="0" selected>없음</option>
+      <option value="2">2초</option>
+      <option value="4">4초</option>
+      <option value="6">6초</option>
+      <option value="10">10초</option>
+    </select>
+  </div>
+
+  <div class="row" style="margin-top:16px">
+    <button class="play" id="playBtn" onclick="play()">▶ 재생</button>
+    <button class="sub" onclick="togglePause()" id="pauseBtn">⏸ 일시정지</button>
+    <button class="sub" onclick="stopAll()">⏹ 정지</button>
+  </div>
+
+  <div id="status"></div>
+  <div id="sentences"></div>
+</div>
+
+<script>
+let voices = [];
+let queue = [];
+let idx = 0;
+let playing = false;
+let paused = false;
+let gapTimer = null;
+
+function loadVoices() {
+  voices = speechSynthesis.getVoices();
+  const sel = document.getElementById('voice');
+  sel.innerHTML = '';
+  const pref = voices.filter(v => v.lang.startsWith('ko') || v.lang.startsWith('en'));
+  const list = pref.length ? pref : voices;
+  list.forEach(v => {
+    const o = document.createElement('option');
+    o.value = v.name;
+    o.textContent = v.name + ' (' + v.lang + ')';
+    sel.appendChild(o);
+  });
+}
+loadVoices();
+speechSynthesis.onvoiceschanged = loadVoices;
+
+document.getElementById('rate').oninput = e => {
+  document.getElementById('rateVal').textContent = Number(e.target.value).toFixed(1) + 'x';
+};
+
+function splitSentences(text) {
+  return text
+    .replace(/\n+/g, ' ')
+    .split(/(?<=[.!?。？！])\s+|(?<=다\.)\s+/)
+    .map(s => s.trim())
+    .filter(s => s.length > 0);
+}
+
+function play() {
+  stopAll();
+  const text = document.getElementById('text').value.trim();
+  if (!text) { document.getElementById('status').textContent = '텍스트를 입력해주세요.'; return; }
+
+  queue = splitSentences(text);
+  idx = 0;
+  playing = true;
+  paused = false;
+
+  const box = document.getElementById('sentences');
+  box.innerHTML = '';
+  queue.forEach((s, i) => {
+    const d = document.createElement('div');
+    d.className = 'sent';
+    d.id = 'sent-' + i;
+    d.textContent = s;
+    d.onclick = () => { idx = i; speechSynthesis.cancel(); clearTimeout(gapTimer); speakNext(); };
+    box.appendChild(d);
+  });
+  speakNext();
+}
+
+function speakNext() {
+  if (!playing || idx >= queue.length) {
+    if (idx >= queue.length) document.getElementById('status').textContent = '재생 완료';
+    playing = false;
+    return;
+  }
+  document.querySelectorAll('.sent').forEach(d => d.classList.remove('now'));
+  const cur = document.getElementById('sent-' + idx);
+  if (cur) { cur.classList.add('now'); cur.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
+  document.getElementById('status').textContent = (idx + 1) + ' / ' + queue.length + ' 문장';
+
+  const u = new SpeechSynthesisUtterance(queue[idx]);
+  const vName = document.getElementById('voice').value;
+  const v = voices.find(x => x.name === vName);
+  if (v) u.voice = v;
+  u.rate = Number(document.getElementById('rate').value);
+  u.onend = () => {
+    idx++;
+    const gap = Number(document.getElementById('gap').value) * 1000;
+    if (gap > 0 && idx < queue.length) {
+      document.getElementById('status').textContent = '통역 시간... (' + (gap/1000) + '초)';
+      gapTimer = setTimeout(speakNext, gap);
+    } else {
+      speakNext();
+    }
+  };
+  speechSynthesis.speak(u);
+}
+
+function togglePause() {
+  if (!playing) return;
+  if (paused) {
+    speechSynthesis.resume();
+    paused = false;
+    document.getElementById('pauseBtn').textContent = '⏸ 일시정지';
+  } else {
+    speechSynthesis.pause();
+    paused = true;
+    document.getElementById('pauseBtn').textContent = '▶ 계속';
+  }
+}
+
+function stopAll() {
+  playing = false;
+  paused = false;
+  clearTimeout(gapTimer);
+  speechSynthesis.cancel();
+  document.getElementById('pauseBtn').textContent = '⏸ 일시정지';
+  document.querySelectorAll('.sent').forEach(d => d.classList.remove('now'));
+}
+</script>
+</body>
+</html>
