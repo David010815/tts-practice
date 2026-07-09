@@ -45,14 +45,26 @@
   #status { color: #7a8db5; font-size: 13px; margin: 12px 2px; }
   #sentences { margin-top: 10px; }
   .sent {
+    display: flex; align-items: flex-start; gap: 12px;
     background: #fff; border-radius: 10px; padding: 10px 14px; margin-bottom: 6px;
-    font-size: 15px; line-height: 1.5; color: #45557a;
     border-left: 4px solid transparent;
   }
   .sent.now {
-    border-left-color: #3b6ef5; color: #1c2b4a; font-weight: 600;
+    border-left-color: #3b6ef5;
     box-shadow: 0 2px 8px rgba(59, 110, 245, .18);
   }
+  .sbtn {
+    flex-shrink: 0; width: 42px; height: 42px; border-radius: 50%;
+    background: linear-gradient(135deg, #2a5ce0, #3b6ef5); color: #fff;
+    font-size: 16px; padding: 0; border: none;
+    box-shadow: 0 2px 6px rgba(59, 110, 245, .35);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .sbtn.stop { background: #e05c5c; box-shadow: 0 2px 6px rgba(224, 92, 92, .35); }
+  .stext {
+    font-size: 15px; line-height: 1.5; color: #45557a; padding-top: 9px; cursor: pointer;
+  }
+  .sent.now .stext { color: #1c2b4a; font-weight: 600; }
 </style>
 </head>
 <body>
@@ -61,7 +73,7 @@
   <p>텍스트를 붙여넣고 재생하세요</p>
 </header>
 <div class="wrap">
-  <textarea id="text" placeholder="여기에 연설문, 기사 등 텍스트를 붙여넣으세요"></textarea>
+  <textarea id="text" placeholder="여기에 연설문, 기사 등 텍스트를 붙여넣으세요 — 붙여넣으면 아래에 문장별로 나뉘어 표시돼요"></textarea>
 
   <div class="label">음성</div>
   <div class="row">
@@ -74,7 +86,7 @@
     <span class="val" id="rateVal">1.0x</span>
   </div>
 
-  <div class="label">문장 사이 멈춤 (순차통역 연습용)</div>
+  <div class="label">문장 사이 멈춤 (전체 재생 시 · 순차통역 연습용)</div>
   <div class="row">
     <select id="gap">
       <option value="0" selected>없음</option>
@@ -86,7 +98,7 @@
   </div>
 
   <div class="row" style="margin-top:16px">
-    <button class="play" id="playBtn" onclick="play()">▶ 재생</button>
+    <button class="play" id="playBtn" onclick="playAll()">▶ 전체 재생</button>
     <button class="sub" onclick="togglePause()" id="pauseBtn">⏸ 일시정지</button>
     <button class="sub" onclick="stopAll()">⏹ 정지</button>
   </div>
@@ -99,9 +111,10 @@
 let voices = [];
 let queue = [];
 let idx = 0;
-let playing = false;
+let playing = false;   // 전체 재생 중
 let paused = false;
 let gapTimer = null;
+let oneShot = -1;      // 단일 문장 재생 중인 인덱스 (-1이면 아님)
 
 function loadVoices() {
   voices = speechSynthesis.getVoices();
@@ -131,46 +144,104 @@ function splitSentences(text) {
     .filter(s => s.length > 0);
 }
 
-function play() {
+// 텍스트 입력/붙여넣기 시 자동으로 문장 목록 생성
+let buildTimer = null;
+document.getElementById('text').addEventListener('input', () => {
+  clearTimeout(buildTimer);
+  buildTimer = setTimeout(buildList, 400);
+});
+
+function buildList() {
   stopAll();
   const text = document.getElementById('text').value.trim();
-  if (!text) { document.getElementById('status').textContent = '텍스트를 입력해주세요.'; return; }
-
-  queue = splitSentences(text);
-  idx = 0;
-  playing = true;
-  paused = false;
-
   const box = document.getElementById('sentences');
   box.innerHTML = '';
+  queue = text ? splitSentences(text) : [];
+  document.getElementById('status').textContent =
+    queue.length ? queue.length + '문장으로 나눴어요. ▶ 버튼으로 문장별 재생, 텍스트를 탭하면 거기부터 이어서 재생돼요.' : '';
+
   queue.forEach((s, i) => {
-    const d = document.createElement('div');
-    d.className = 'sent';
-    d.id = 'sent-' + i;
-    d.textContent = s;
-    d.onclick = () => { idx = i; speechSynthesis.cancel(); clearTimeout(gapTimer); speakNext(); };
-    box.appendChild(d);
+    const row = document.createElement('div');
+    row.className = 'sent';
+    row.id = 'sent-' + i;
+
+    const btn = document.createElement('button');
+    btn.className = 'sbtn';
+    btn.id = 'sbtn-' + i;
+    btn.textContent = '▶';
+    btn.onclick = () => playOne(i);
+
+    const txt = document.createElement('div');
+    txt.className = 'stext';
+    txt.textContent = s;
+    txt.onclick = () => playFrom(i);
+
+    row.appendChild(btn);
+    row.appendChild(txt);
+    box.appendChild(row);
   });
+}
+
+function makeUtter(text) {
+  const u = new SpeechSynthesisUtterance(text);
+  const vName = document.getElementById('voice').value;
+  const v = voices.find(x => x.name === vName);
+  if (v) u.voice = v;
+  u.rate = Number(document.getElementById('rate').value);
+  return u;
+}
+
+function highlight(i) {
+  document.querySelectorAll('.sent').forEach(d => d.classList.remove('now'));
+  const cur = document.getElementById('sent-' + i);
+  if (cur) { cur.classList.add('now'); cur.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
+}
+
+function resetButtons() {
+  document.querySelectorAll('.sbtn').forEach(b => {
+    b.textContent = '▶'; b.classList.remove('stop');
+  });
+}
+
+// ── 단일 문장 재생 ──
+function playOne(i) {
+  // 같은 버튼을 재생 중에 다시 누르면 정지
+  if (oneShot === i) { stopAll(); return; }
+  stopAll();
+  oneShot = i;
+  highlight(i);
+  const b = document.getElementById('sbtn-' + i);
+  b.textContent = '⏹'; b.classList.add('stop');
+  document.getElementById('status').textContent = (i + 1) + '번 문장 재생 중';
+
+  const u = makeUtter(queue[i]);
+  u.onend = () => { if (oneShot === i) stopAll(); };
+  speechSynthesis.speak(u);
+}
+
+// ── 전체/이어서 재생 ──
+function playAll() { playFrom(0); }
+
+function playFrom(start) {
+  stopAll();
+  if (!queue.length) { document.getElementById('status').textContent = '텍스트를 입력해주세요.'; return; }
+  idx = start;
+  playing = true;
   speakNext();
 }
 
 function speakNext() {
   if (!playing || idx >= queue.length) {
-    if (idx >= queue.length) document.getElementById('status').textContent = '재생 완료';
+    if (idx >= queue.length && queue.length) document.getElementById('status').textContent = '재생 완료';
     playing = false;
     return;
   }
-  document.querySelectorAll('.sent').forEach(d => d.classList.remove('now'));
-  const cur = document.getElementById('sent-' + idx);
-  if (cur) { cur.classList.add('now'); cur.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
+  highlight(idx);
   document.getElementById('status').textContent = (idx + 1) + ' / ' + queue.length + ' 문장';
 
-  const u = new SpeechSynthesisUtterance(queue[idx]);
-  const vName = document.getElementById('voice').value;
-  const v = voices.find(x => x.name === vName);
-  if (v) u.voice = v;
-  u.rate = Number(document.getElementById('rate').value);
+  const u = makeUtter(queue[idx]);
   u.onend = () => {
+    if (!playing) return;
     idx++;
     const gap = Number(document.getElementById('gap').value) * 1000;
     if (gap > 0 && idx < queue.length) {
@@ -184,7 +255,7 @@ function speakNext() {
 }
 
 function togglePause() {
-  if (!playing) return;
+  if (!playing && oneShot < 0) return;
   if (paused) {
     speechSynthesis.resume();
     paused = false;
@@ -199,10 +270,12 @@ function togglePause() {
 function stopAll() {
   playing = false;
   paused = false;
+  oneShot = -1;
   clearTimeout(gapTimer);
   speechSynthesis.cancel();
   document.getElementById('pauseBtn').textContent = '⏸ 일시정지';
   document.querySelectorAll('.sent').forEach(d => d.classList.remove('now'));
+  resetButtons();
 }
 </script>
 </body>
