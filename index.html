@@ -34,6 +34,11 @@
   }
   input[type=range] { flex: 1; min-width: 120px; accent-color: #3b6ef5; }
   .val { font-size: 14px; font-weight: 700; color: #2a5ce0; min-width: 48px; text-align: right; }
+  .est {
+    margin-top: 10px; padding: 10px 14px; border-radius: 12px;
+    background: #fff; border: 1.5px solid #c9d8ff;
+    font-size: 14px; color: #3b5bb5; font-weight: 600;
+  }
   button {
     font-size: 16px; font-weight: 700; padding: 12px 20px;
     border-radius: 12px; border: none; cursor: pointer;
@@ -97,6 +102,8 @@
     </select>
   </div>
 
+  <div class="est" id="est">예상 낭독 시간: —</div>
+
   <div class="row" style="margin-top:16px">
     <button class="play" id="playBtn" onclick="playAll()">▶ 전체 재생</button>
     <button class="sub" onclick="togglePause()" id="pauseBtn">⏸ 일시정지</button>
@@ -111,10 +118,10 @@
 let voices = [];
 let queue = [];
 let idx = 0;
-let playing = false;   // 전체 재생 중
+let playing = false;
 let paused = false;
 let gapTimer = null;
-let oneShot = -1;      // 단일 문장 재생 중인 인덱스 (-1이면 아님)
+let oneShot = -1;
 
 function loadVoices() {
   voices = speechSynthesis.getVoices();
@@ -134,7 +141,9 @@ speechSynthesis.onvoiceschanged = loadVoices;
 
 document.getElementById('rate').oninput = e => {
   document.getElementById('rateVal').textContent = Number(e.target.value).toFixed(1) + 'x';
+  updateEstimate();
 };
+document.getElementById('gap').onchange = updateEstimate;
 
 function splitSentences(text) {
   return text
@@ -142,6 +151,48 @@ function splitSentences(text) {
     .split(/(?<=[.!?。？！])\s+|(?<=다\.)\s+/)
     .map(s => s.trim())
     .filter(s => s.length > 0);
+}
+
+// ── 낭독 시간 추정 ──
+function estimateSeconds(text) {
+  // 한글 음절 수
+  const hangul = (text.match(/[가-힣]/g) || []).length;
+  // 영어 단어 수
+  const engWords = (text.match(/[A-Za-z]+(?:'[A-Za-z]+)?/g) || []).length;
+  // 숫자 덩어리 수
+  const nums = (text.match(/\d+/g) || []).length;
+  // 문장부호(쉼표 등)에 따른 짧은 쉼
+  const pauses = (text.match(/[,.;:!?、。]/g) || []).length;
+
+  // 1.0x 기준: 한글 약 5.5음절/초, 영어 약 2.6단어/초
+  return hangul / 5.5 + engWords / 2.6 + nums * 0.5 + pauses * 0.15;
+}
+
+function fmtTime(sec) {
+  sec = Math.round(sec);
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return m > 0 ? m + '분 ' + s + '초' : s + '초';
+}
+
+function updateEstimate() {
+  const el = document.getElementById('est');
+  const text = document.getElementById('text').value.trim();
+  if (!text) { el.textContent = '예상 낭독 시간: —'; return; }
+
+  const rate = Number(document.getElementById('rate').value);
+  const gap = Number(document.getElementById('gap').value);
+  const sents = splitSentences(text);
+
+  const speech = estimateSeconds(text) / rate;
+  const gapTotal = gap * Math.max(0, sents.length - 1);
+
+  let msg = '예상 낭독 시간: 약 ' + fmtTime(speech) +
+            ' (' + rate.toFixed(1) + 'x · ' + sents.length + '문장)';
+  if (gapTotal > 0) {
+    msg += ' · 멈춤 포함 약 ' + fmtTime(speech + gapTotal);
+  }
+  el.textContent = msg;
 }
 
 // 텍스트 입력/붙여넣기 시 자동으로 문장 목록 생성
@@ -159,6 +210,7 @@ function buildList() {
   queue = text ? splitSentences(text) : [];
   document.getElementById('status').textContent =
     queue.length ? queue.length + '문장으로 나눴어요. ▶ 버튼으로 문장별 재생, 텍스트를 탭하면 거기부터 이어서 재생돼요.' : '';
+  updateEstimate();
 
   queue.forEach((s, i) => {
     const row = document.createElement('div');
@@ -205,7 +257,6 @@ function resetButtons() {
 
 // ── 단일 문장 재생 ──
 function playOne(i) {
-  // 같은 버튼을 재생 중에 다시 누르면 정지
   if (oneShot === i) { stopAll(); return; }
   stopAll();
   oneShot = i;
